@@ -68,6 +68,151 @@ function registerRoutes() {
     });
   });
 
+  // Get CSV data with filters
+app.get('/api/csv-data/:csvId', async (req, res) => {
+  try {
+    const { csvId } = req.params;
+    const { reviewed_only, search_term, column_filters } = req.query;
+    
+    let query = { csv_id: csvId };
+    
+    if (reviewed_only !== undefined) {
+      query.is_reviewed = reviewed_only === 'true';
+    }
+    
+    if (search_term) {
+      query.$or = [
+        ...Object.keys(query.row_data || {}).map(field => ({
+          [`row_data.${field}`]: { $regex: search_term, $options: 'i' }
+        }))
+      ];
+    }
+    
+    if (column_filters) {
+      const filters = JSON.parse(column_filters);
+      Object.entries(filters).forEach(([column, value]) => {
+        if (value) {
+          query[`row_data.${column}`] = value;
+        }
+      });
+    }
+    
+    const rows = await app.locals.csvRows.find(query).toArray();
+    const csvFile = await app.locals.csvFiles.findOne({ id: csvId });
+    
+    res.json({
+      csv_file: csvFile,
+      rows: rows
+    });
+  } catch (error) {
+    console.error('Error fetching CSV data:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get column data for filters
+app.get('/api/csv-columns/:csvId', async (req, res) => {
+  try {
+    const { csvId } = req.params;
+    const pipeline = [
+      { $match: { csv_id: csvId } },
+      { $project: { row_data: 1 } },
+      { $unwind: "$row_data" },
+      { 
+        $group: {
+          _id: "$row_data.k",
+          values: { $addToSet: "$row_data.v" }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          columns: { 
+            $push: {
+              k: "$_id",
+              v: "$values"
+            }
+          }
+        }
+      }
+    ];
+    
+    const result = await app.locals.csvRows.aggregate(pipeline).toArray();
+    const columnData = {};
+    
+    if (result.length > 0) {
+      result[0].columns.forEach(col => {
+        columnData[col.k] = col.v.filter(v => v !== undefined && v !== null);
+      });
+    }
+    
+    res.json(columnData);
+  } catch (error) {
+    console.error('Error fetching column data:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update review status
+app.post('/api/update-review-status', async (req, res) => {
+  try {
+    const { row_ids, is_reviewed } = req.body;
+    
+    if (!row_ids || !Array.isArray(row_ids)) {
+      return res.status(400).json({ error: 'Invalid row_ids' });
+    }
+    
+    await app.locals.csvRows.updateMany(
+      { id: { $in: row_ids } },
+      { 
+        $set: { 
+          is_reviewed: is_reviewed,
+          review_timestamp: is_reviewed ? new Date() : null
+        } 
+      }
+    );
+    
+    res.json({ success: true, updated_count: row_ids.length });
+  } catch (error) {
+    console.error('Error updating review status:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Export reviewed data
+app.get('/api/export-reviewed/:csvId', async (req, res) => {
+  try {
+    const { csvId } = req.params;
+    const csvFile = await app.locals.csvFiles.findOne({ id: csvId });
+    const rows = await app.locals.csvRows.find({ 
+      csv_id: csvId,
+      is_reviewed: true 
+    }).toArray();
+    
+    if (!csvFile) {
+      return res.status(404).json({ error: 'CSV file not found' });
+    }
+    
+    // Create CSV content
+    const headers = csvFile.headers;
+    let csvContent = headers.join(',') + '\n';
+    
+    rows.forEach(row => {
+      const rowData = headers.map(header => 
+        `"${(row.row_data[header] || '').toString().replace(/"/g, '""')}"`
+      );
+      csvContent += rowData.join(',') + '\n';
+    });
+    
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=reviewed_${csvFile.filename}`);
+    res.send(csvContent);
+  } catch (error) {
+    console.error('Error exporting reviewed data:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
   // Upload CSV
   app.post('/api/upload-csv', upload.single('CSV'), async (req, res) => {
     try {
