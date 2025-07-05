@@ -18,7 +18,7 @@ const upload = multer({
   }
 });
 
-const mongoUrl = process.env.MONGO_URL || 'mongodb://localhost:27017';
+const mongoUrl = process.env.MONGO_URL || 'mongodb+srv://pandeyrahul1564:jyW1r4T9Y84kGWoJ@torchmap.4js5lq6.mongodb.net/?retryWrites=true&w=majority&tls=true';
 const dbName = process.env.DB_NAME || 'csv_manager';
 let db, csvFiles, csvRows;
 
